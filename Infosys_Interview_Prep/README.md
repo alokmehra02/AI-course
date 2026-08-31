@@ -33,6 +33,8 @@ Every question in **01–06** uses the same layout:
 | [05_Embeddings_VectorDB_Retrieval_QA.md](./05_Embeddings_VectorDB_Retrieval_QA.md) | Embeddings, Pinecone, hybrid search | Deep follow-ups |
 | [06_RAG_Pipeline_Step_by_Step.md](./06_RAG_Pipeline_Step_by_Step.md) | Pipeline walkthrough + speakable Q&A per step | *"Explain your pipeline"* |
 
+**Also use:** [AI_Engineer_Prep/](../AI_Engineer_Prep/) — MCP, eval, production, fine-tuning Q&A + 12-week plan (complements this folder).
+
 ---
 
 ## Anchor story (memorize this)
