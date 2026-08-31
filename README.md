@@ -1,6 +1,6 @@
 # AI Course — Generative AI, RAG & LangGraph
 
-Personal learning repo for **Generative AI**, **RAG**, **LangChain**, and **LangGraph** — with hands-on Python examples and Infosys interview prep.
+Personal learning repo for **Generative AI**, **RAG**, **LangChain**, and **LangGraph** — with hands-on Python examples, system design prep, and Infosys interview prep.
 
 **Author:** Aalok Singh Mehra  
 **Email:** alokmehra02@gmail.com
@@ -18,6 +18,7 @@ AI-course/
 │   ├── lesson_1_llm_fundamentals/     ← Tokens, messages, completions
 │   └── lesson_2_embeddings/           ← Embeddings (manual, LangChain, LangGraph)
 ├── Infosys_Interview_Prep/            ← Interview Q&A (speakable answers)
+├── System_Design_Prep/                ← System design interview study material
 └── .gitignore
 ```
 
@@ -97,10 +98,32 @@ See [Infosys_Interview_Prep/README.md](./Infosys_Interview_Prep/README.md) for s
 
 ---
 
+## System design prep (`System_Design_Prep/`)
+
+Full system design interview study material — 17 modules covering everything from
+requirements gathering to production RAG architecture. Every topic has a spoken
+"say this in the interview" script, a real enterprise example with real numbers,
+runnable code, trade-offs, and the follow-up questions interviewers actually ask.
+
+| Track | Modules |
+|-------|---------|
+| **Framework** | [00 Interview Playbook](./System_Design_Prep/00_Interview_Playbook.md) · [01 Requirements & Estimation](./System_Design_Prep/01_Requirements_And_NFRs.md) |
+| **Networking & APIs** | [02 Networking](./System_Design_Prep/02_Networking.md) · [03 API Design](./System_Design_Prep/03_APIs.md) · [04 Scaling & Load Balancing](./System_Design_Prep/04_Scaling_And_LoadBalancing.md) |
+| **Data** | [05 SQL, ACID & Indexes](./System_Design_Prep/05_Databases_Relational.md) · [06 Replication & Sharding](./System_Design_Prep/06_Data_Distribution.md) · [07 Caching & CDN](./System_Design_Prep/07_Caching_And_CDN.md) |
+| **Distributed systems** | [08 Messaging & Kafka](./System_Design_Prep/08_Messaging_And_Events.md) · [09 Reliability Patterns](./System_Design_Prep/09_Reliability_Patterns.md) |
+| **Production** | [10 Security](./System_Design_Prep/10_Security.md) · [11 Observability & SRE](./System_Design_Prep/11_Observability_And_SRE.md) · [12 Architecture Styles](./System_Design_Prep/12_Architecture_Styles.md) · [13 Concurrency & Cost](./System_Design_Prep/13_Concurrency_And_Performance.md) |
+| **AI system design** | [14 LLM & RAG System Design](./System_Design_Prep/14_AI_LLM_System_Design.md) |
+| **Practice** | [15 Worked Case Studies](./System_Design_Prep/15_Case_Studies.md) · [16 Cheat Sheet & Study Plan](./System_Design_Prep/16_Cheatsheet_And_Drills.md) · [17 Redis, Kafka & Flash Sales](./System_Design_Prep/17_Redis_Kafka_Flash_Sale_Case_Studies.md) |
+
+See [System_Design_Prep/README.md](./System_Design_Prep/README.md) for the study order.
+
+---
+
 ## Quick links
 
 - **Learn:** Start with `Artifacts/lesson_1_llm_fundamentals.md` + `examples/lesson_1_llm_fundamentals/`
-- **Interview:** Start with `Infosys_Interview_Prep/01` and `04` (LangChain vs LangGraph)
+- **Interview (AI):** Start with `Infosys_Interview_Prep/01` and `04` (LangChain vs LangGraph)
+- **Interview (system design):** Start with `System_Design_Prep/00_Interview_Playbook.md`
 - **Pipeline deep dive:** `Infosys_Interview_Prep/06_RAG_Pipeline_Step_by_Step.md`
 
 ---
