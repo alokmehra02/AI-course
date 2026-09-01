@@ -141,7 +141,8 @@ fine-tuning vs RAG.
 | 07 | [Eval & Production Q&A](./AI_Engineer_Prep/07_Evaluation_Guardrails_Production_QA.md) | RAGAS, guardrails, observability |
 | 08 | [Fine-tuning vs RAG Q&A](./AI_Engineer_Prep/08_FineTuning_Prompting_Model_Choice_QA.md) | Model choice, LoRA |
 | — | [Gemini Live Voice Agent Guide](./AI_Engineer_Prep/GEMINI_LIVE_VOICE_AGENT_INTERVIEW_GUIDE.md) | VoXgent native audio pipeline (Twilio, VAD, barge-in) |
-| — | [Gemini Live pipeline canvas](./AI_Engineer_Prep/gemini-live-pipeline-whiteboard.canvas.tsx) | Interactive whiteboard (open beside chat in Cursor) |
+| — | [Gemini Live pipeline whiteboard (MD)](./AI_Engineer_Prep/gemini-live-pipeline-whiteboard.md) | Readable on GitHub — all pipeline tabs |
+| — | [Gemini Live pipeline canvas](./AI_Engineer_Prep/gemini-live-pipeline-whiteboard.canvas.tsx) | Interactive whiteboard in Cursor IDE only |
 
 See [AI_Engineer_Prep/README.md](./AI_Engineer_Prep/README.md) for the full topic matrix and 12-week plan.
 

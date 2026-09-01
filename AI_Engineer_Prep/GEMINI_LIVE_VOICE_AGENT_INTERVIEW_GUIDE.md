@@ -11,7 +11,9 @@
 
 **How to use this doc:** Read Parts 1–9 once. Before an interview, rehearse the **opening script** and pick **two deep dives** (usually audio IN + barge-in, or transcripts + reliability). Each section has **What to say**, **Why production does this**, and **What we got wrong** where it matters.
 
-**Visual whiteboard:** [gemini-live-pipeline-whiteboard.canvas.tsx](/home/aalokmehra/.cursor/projects/home-aalokmehra-Desktop-lear/canvases/gemini-live-pipeline-whiteboard.canvas.tsx) — open beside chat for tabbed pipeline boards (overview, setup, audio IN/OUT, Gemini, barge-in, formats). Repo copy: [AI_Engineer_Prep/gemini-live-pipeline-whiteboard.canvas.tsx](./gemini-live-pipeline-whiteboard.canvas.tsx).
+**Visual whiteboard:**
+- **GitHub / any viewer:** [gemini-live-pipeline-whiteboard.md](./gemini-live-pipeline-whiteboard.md) — full markdown version of all tabs
+- **Cursor Canvas (interactive):** [gemini-live-pipeline-whiteboard.canvas.tsx](/home/aalokmehra/.cursor/projects/home-aalokmehra-Desktop-lear/canvases/gemini-live-pipeline-whiteboard.canvas.tsx) — open beside chat
 
 ---
 

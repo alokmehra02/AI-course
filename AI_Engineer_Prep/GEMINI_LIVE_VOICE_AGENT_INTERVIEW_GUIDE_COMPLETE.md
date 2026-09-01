@@ -5,7 +5,7 @@
 
 **Companion doc:** For interview **talk tracks**, production tradeoffs, and “what we got wrong,” see [GEMINI_LIVE_VOICE_AGENT_INTERVIEW_GUIDE.md](./GEMINI_LIVE_VOICE_AGENT_INTERVIEW_GUIDE.md).
 
-**Visual whiteboard:** [gemini-live-pipeline-whiteboard.canvas.tsx](/home/aalokmehra/.cursor/projects/home-aalokmehra-Desktop-lear/canvases/gemini-live-pipeline-whiteboard.canvas.tsx) — tabbed pipeline boards in Cursor Canvas.
+**Visual whiteboard:** [gemini-live-pipeline-whiteboard.md](./gemini-live-pipeline-whiteboard.md) (GitHub) · [Canvas in Cursor](/home/aalokmehra/.cursor/projects/home-aalokmehra-Desktop-lear/canvases/gemini-live-pipeline-whiteboard.canvas.tsx) (interactive)
 
 **How to use this in an interview:** Lead with the end-to-end story in 60 seconds, then go deep on whatever they probe (Twilio, VAD, noise, barge-in, transcripts). Numbers and file names below are from this repo — use them. If you forget a threshold, say the *reason* the knob exists; that scores higher than memorizing every env var.
 
