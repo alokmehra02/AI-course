@@ -18,6 +18,7 @@ production, fine-tuning vs RAG) and ties everything into one study plan.
 | **Learning from scratch** | Week 1 below → Artifacts lesson 1 + `examples/lesson_1_*` |
 | **RAG-focused round** | Infosys [02](../Infosys_Interview_Prep/02_RAG_Deep_Dive_QA.md) + [06](../Infosys_Interview_Prep/06_RAG_Pipeline_Step_by_Step.md) + [System Design Module 14](../System_Design_Prep/14_AI_LLM_System_Design.md) |
 | **Agentic / MCP round** | [04 MCP](./04_MCP_Tools_Agentic_AI_QA.md) + Artifact [lesson 7](../Artifacts/lesson_7_mcp_and_tool_calling.md) + `examples/lesson_7_mcp/` |
+| **Gemini Live voice (VoXgent)** | [Gemini Live Voice Agent Guide](./GEMINI_LIVE_VOICE_AGENT_INTERVIEW_GUIDE.md) |
 
 ---
 

@@ -140,6 +140,7 @@ fine-tuning vs RAG.
 | 06 | [Text-to-SQL Q&A](./AI_Engineer_Prep/06_Text_to_SQL_QA.md) | AST guards, schema pruning |
 | 07 | [Eval & Production Q&A](./AI_Engineer_Prep/07_Evaluation_Guardrails_Production_QA.md) | RAGAS, guardrails, observability |
 | 08 | [Fine-tuning vs RAG Q&A](./AI_Engineer_Prep/08_FineTuning_Prompting_Model_Choice_QA.md) | Model choice, LoRA |
+| — | [Gemini Live Voice Agent Guide](./AI_Engineer_Prep/GEMINI_LIVE_VOICE_AGENT_INTERVIEW_GUIDE.md) | VoXgent native audio pipeline (Twilio, VAD, barge-in) |
 
 See [AI_Engineer_Prep/README.md](./AI_Engineer_Prep/README.md) for the full topic matrix and 12-week plan.
 
