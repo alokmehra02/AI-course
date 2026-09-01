@@ -1,466 +1,447 @@
-# Gemini Live Voice Agent — Ultimate Interview Guide
+# Gemini Live Voice Agent — Interview Guide (Production-Focused)
 
-**Scope:** VoxGent backend **Google Gemini 2.5 native audio-to-audio** pipeline only  
-(`voice_stack = gemini_live_native`). Not the classic Google STT/TTS pipeline, not ElevenLabs ConvAI.
+**Scope:** VoxGent backend, **Google Gemini 2.5 native audio-to-audio** only (`voice_stack = gemini_live_native`). Not classic Google STT → LLM → TTS, not ElevenLabs ConvAI.
 
-**How to use this in an interview:** Lead with the end-to-end story in 60 seconds, then go deep on whatever they probe (Twilio, VAD, noise, barge-in, transcripts). Numbers and file names below are from this repo — use them. If you forget a threshold, say the *reason* the knob exists; that scores higher than memorizing every env var.
+**Two guides — use both:**
 
----
-
-## 60-second pitch (memorize this)
-
-We run a **bidirectional native-audio session** with Gemini Live. Twilio Media Streams sends **8 kHz µ-law** over a WebSocket. We decode to PCM, run **client-side DSP** (noise suppression, AGC, near/far gating) so Gemini’s **server VAD** sees a clean near-field caller, resample to **16 kHz PCM**, and stream into Gemini Live (`gemini-live-2.5-flash-native-audio` on Vertex). Gemini returns **24 kHz native speech audio** plus **input and output transcripts**. We resample back to 8 kHz µ-law, **pace frames in real time** to Twilio, and persist transcripts asynchronously so the audio path never blocks on the database.
-
-The hard problems are not “calling the API.” They are **echo/TV barge-in**, **quiet handset speech**, **not manufacturing end-of-turn silence**, **keeping transcripts complete under loop lag**, and **not dropping audio under backpressure**.
-
----
-
-## Architecture map
-
-```
-Caller phone
-    │  PSTN / SIP
-    ▼
-Twilio Voice  ──TwiML Connect+Stream──►  wss://…/ws/voice
-    │                                         │
-    │  JSON events: connected → start → media → stop
-    │                                         ▼
-    │                              rt_voice_websocket_handler
-    │                                         │
-    │                              GeminiLiveTwilioAdapter
-    │                                         │
-    │                              GeminiLiveSession  ◄── preconnect during ring
-    │                         ┌───────────────┼───────────────┐
-    │                         │               │               │
-    │                    send_audio      receive_loop    playout_loop
-    │                    (inbound)       (Gemini WS)     (outbound)
-    │                         │               │               │
-    │              DSP + gate + resample      │         24k → 8k µ-law paced
-    │                         ▼               ▼               ▼
-    │                   Gemini Live      transcripts,     Twilio media
-    │                   send_realtime_   tools, audio     + clear on barge-in
-    │                   input
-    ▼
-Twilio plays agent audio to caller
-```
-
-**Key files (code walkthrough ammo):**
-
-| Layer | File |
+| Doc | Best for |
 |---|---|
-| TwiML / stream URL | `app/api/v1/quick_call_webhook.py` |
-| WS entry | `app/websocket/voice_router.py` → `/ws/voice` |
-| Twilio event loop | `app/websocket/rt_voice_websocket.py` |
-| Adapter (µ-law ↔ session) | `app/services/voice/gemini_live_twilio_adapter.py` |
-| Live session (DSP, VAD, Gemini) | `app/services/voice/gemini_live_session.py` |
+| **This file** — production talk track | What to *say*, tradeoffs, mistakes, interview scripts |
+| [GEMINI_LIVE_VOICE_AGENT_INTERVIEW_GUIDE_COMPLETE.md](./GEMINI_LIVE_VOICE_AGENT_INTERVIEW_GUIDE_COMPLETE.md) | Full pipeline reference: mermaid diagrams, I1–O17 hops, **30+ Q&A**, cheat sheet |
+
+**How to use this doc:** Read Parts 1–9 once. Before an interview, rehearse the **opening script** and pick **two deep dives** (usually audio IN + barge-in, or transcripts + reliability). Each section has **What to say**, **Why production does this**, and **What we got wrong** where it matters.
+
+**Visual whiteboard:** [gemini-live-pipeline-whiteboard.canvas.tsx](/home/aalokmehra/.cursor/projects/home-aalokmehra-Desktop-lear/canvases/gemini-live-pipeline-whiteboard.canvas.tsx) — open beside chat for tabbed pipeline boards (overview, setup, audio IN/OUT, Gemini, barge-in, formats). Repo copy: [AI_Engineer_Prep/gemini-live-pipeline-whiteboard.canvas.tsx](./gemini-live-pipeline-whiteboard.canvas.tsx).
+
+---
+
+## Opening script (~90 seconds)
+
+Use this almost verbatim:
+
+> “We run phone agents on Twilio Media Streams. Audio is 8 kHz µ-law over a WebSocket — that is the PSTN contract. We do **not** send that straight to the model.
+>
+> On the way in we decode, denoise, and **gate** what reaches Gemini Live: TV, far-field voices, and echo must not look like the caller. We resample to 16 kHz PCM and stream into Gemini’s **native audio** API on Vertex — one bidirectional session, not separate STT and TTS.
+>
+> Gemini’s **server VAD** decides when the caller’s turn ends and when barge-in happens. We only **filter** audio before it gets there; we do not replace Google’s turn-taking.
+>
+> On the way out Gemini returns 24 kHz speech. We queue it, resample to 8 kHz, encode µ-law, and **pace** frames in real time to Twilio. Under load we **delay** agent audio; we almost never drop it — except when the caller interrupts, then we purge the queue and send Twilio `clear`.
+>
+> Transcripts come from Gemini’s built-in input/output transcription on the same socket. We persist them in the background so the audio path never waits on Postgres.
+>
+> The hard part of this stack is not calling the API. It is **PSTN noise**, **not faking end-of-turn silence**, **barge-in without echo**, and **keeping transcripts honest** when ASR is weak.”
+
+---
+
+## Part 1 — How production voice agents are actually built
+
+Most production phone agents follow one of two patterns:
+
+**Cascaded pipeline (classic)**  
+`Audio → STT → text LLM → TTS → Audio`
+
+- Pros: You control every word (TTS), STT is mature, easy to log text, easy to swap vendors.
+- Cons: Higher latency (three hops), awkward barge-in (must cancel TTS and rewind LLM), STT finals lag behind speech.
+
+**Native / speech-to-speech (what we use)**  
+`Audio ↔ single multimodal model (Gemini Live)`
+
+- Pros: Lower time-to-first-audio, natural overlap, barge-in is a first-class API event (`interrupted`).
+- Cons: Less control over exact wording, transcripts are model ASR (not a dedicated STT), accent control is mostly prompt-based, you own **all** telephony DSP because the model hears whatever you send.
+
+**What interviewers expect you to know:** Production systems always add a **telephony layer** between the carrier and the model — codec conversion, pacing, echo avoidance, noise handling, and backpressure. Whether you use cascaded or native audio, that layer exists. We just do more of it because Gemini hears raw-ish audio and its VAD reacts to everything we forward.
+
+**Our stack in one line:**
+
+```
+Twilio (8k µ-law) → our DSP + gate → Gemini Live (16k in / 24k out) → pace → Twilio → caller
+```
+
+**Key files if they ask “where in code?”**
+
+| Topic | File |
+|---|---|
+| TwiML + stream URL | `app/api/v1/quick_call_webhook.py` |
+| WebSocket `/ws/voice` | `app/websocket/rt_voice_websocket.py` |
+| µ-law adapter | `app/services/voice/gemini_live_twilio_adapter.py` |
+| Session + DSP + Gemini | `app/services/voice/gemini_live_session.py` |
 | Inbound DSP | `app/services/voice/inbound_audio_processor.py` |
-| Noise backends | `gemini_live_rnnoise_filter.py`, `gemini_live_hush_filter.py`, `gemini_live_noise_filter.py` |
-| Outbound codec / pacing | `app/services/voice/twilio_audio_codec.py` |
-| Model / RAG / gating | `app/services/voice/gemini_live_bridge.py` |
-| Ringing preconnect | `app/services/voice/gemini_preconnect.py` |
-| Transcript usability | `inbound_audio_processor.assess_transcript_usability` |
-| Post-call script fix | `app/services/voice/transcript_script_normalizer.py` |
+| Outbound pacing | `app/services/voice/twilio_audio_codec.py` |
+| Preconnect on ring | `app/services/voice/gemini_preconnect.py` |
 
 ---
 
-## End-to-end flow (interview walkthrough)
+## Part 2 — Two meanings of “inbound” (say this early)
 
-Walk this in order. Interviewers usually stop you at the layer they care about.
+Interviewers mix these up. Clarify in one sentence:
 
-### 1. Call setup (before audio)
-
-1. Twilio hits our Voice webhook (`quick_call_webhook`).
-2. We return TwiML: `<Connect><Stream url="wss://…/ws/voice">` plus custom parameters (`agentId`, `organizationId`, `language`, `call_sid`, `patient_phone`, `call_direction`, optional `greeting` / `greeting_played`).
-3. For Gemini Live we **do not** pre-play Google TTS greeting (native greeting is spoken by Gemini). Exception: a cached greeting URL can play first; then we tell Gemini *not* to repeat it.
-4. **Preconnect:** while the phone is still ringing, `preconnect_gemini_live(call_sid, …)` opens the Gemini Live WebSocket so answer latency is not a cold connect. Transcripts produced during ring are buffered (`PreconnectTranscriptBuffer`) and replayed when the adapter binds.
-5. Pod admission: `voice_stream_admission.try_acquire` — if the pod is full we **accept then close 1013** (“try again later”) so Twilio/LB can retry another pod. Closing *before* accept becomes HTTP 403, which is the wrong signal.
-
-### 2. Twilio Media Streams WebSocket
-
-Protocol is Twilio’s JSON Media Streams (not Socket.IO).
-
-| Event | What we do |
+| Term | Meaning |
 |---|---|
-| `connected` | Store `streamSid` |
-| `start` | Load agent, create conversation, start `GeminiLiveTwilioAdapter` |
-| `media` | Base64-decode payload, **drop outbound track**, `adapter.add_audio_chunk(mulaw, True)` |
-| `stop` | `pipeline.stop("twilio_stop_event")`, close WS so TwiML can Redirect (transfer/fallback) |
+| **Call inbound** | Customer called **us**. We route their number to an agent. |
+| **Call outbound** | **We** dialed the customer (campaign / quick call). |
+| **Audio inbound** | Caller → our server → Gemini (their speech). |
+| **Audio outbound** | Gemini → our server → Twilio → caller (agent speech). |
 
-**Track filter:** `should_forward_twilio_track` only forwards `inbound` / `inbound_track`. Outbound (agent audio echoed back by Twilio) must never re-enter Gemini or we get **echo barge-in** and the agent interrupts itself.
+After Twilio Stream `start`, **audio inbound and audio outbound are identical** for both call types. Only **setup** differs (preconnect on outbound ring, number routing on inbound).
 
-Outbound path is a dedicated `media_sender` task draining a bounded queue. Congestion **delays, does not drop**, except barge-in which *must* drop queued agent audio then send Twilio `clear`.
+---
 
-### 3. Audio formats (draw this on a whiteboard)
+## Part 3 — Call lifecycle (what to say step by step)
 
-| Hop | Format | Rate | Why |
-|---|---|---|---|
-| Twilio inbound | µ-law | 8 kHz | PSTN / Media Streams contract |
-| After `audioop.ulaw2lin` | PCM16 mono | 8 kHz | DSP (RNNoise/Hush) runs at 8 kHz |
-| Into Gemini | PCM16 | **16 kHz** | `GEMINI_LIVE_INBOUND_RATE` |
-| From Gemini | PCM16 native audio | **24 kHz** | `GEMINI_LIVE_OUTBOUND_RATE` |
-| Back to Twilio | µ-law | 8 kHz | paced frames (20 ms = 160 bytes, or 100 ms if batching on) |
+### 3.1 Before anyone speaks
 
-Resample both ways with `audioop.ratecv` and a **persistent state** so you do not click at chunk boundaries.
+**Outbound (we dial):**
 
-### 4. Inbound path inside `GeminiLiveSession.send_audio`
+1. API creates a call session (agent, prompt, voice, language).
+2. Twilio REST dials the customer; status callbacks fire (`ringing`, `answered`, …).
+3. On **`ringing`**, we **preconnect** Gemini Live (`preconnect_gemini_live`) so “hello” after answer is not a cold WebSocket connect.
+4. Customer answers → Voice webhook returns TwiML: `<Connect><Stream url="wss://…/ws/voice">` with `agentId`, `organizationId`, `call_sid`, `patient_phone`, `call_direction=outbound`.
+5. We skip Google TTS greeting; Gemini speaks the opening natively.
 
-Per ~20 ms Twilio chunk (~160 bytes µ-law):
+**Inbound (they dial):**
 
-1. **Buffer 5 chunks (~100 ms)** before flushing. Caps at 10; drop oldest if the event loop lagged. Bursting triggers Gemini **error 1011** (“sending data too fast”).
-2. Off the event loop (`run_dsp` / dedicated executor): `process_inbound_pcm_for_gemini`:
-   - Noise filter (RNNoise default, or Hush, or classic Wiener)
-   - AGC for quiet callers
-   - Near/far classifier
-   - Music/TV-bed detector
-   - Audio mode (usually `foreground_safe`: blend ~10% raw + 90% denoised on speech so we do not over-suppress)
-3. **Client gate** `_gate_inbound_audio`: decide send / mute / buffer-for-barge-in.
-4. **Mute cap + zero-fill cap:** never send so much digital silence that Gemini’s server VAD thinks the caller stopped. After `GEMINI_LIVE_MAX_ZERO_FILL_FRAMES` (default 4 = 400 ms, under 1200 ms VAD silence), leak attenuated real audio.
-5. Rate-limit sends (`GEMINI_LIVE_REALTIME_INPUT_MIN_INTERVAL_SEC` ≈ 100 ms).
-6. `session.send_realtime_input(audio=Blob(pcm_16k, mime_type="audio/pcm;rate=16000"))`.
+1. Customer hits our Twilio number → Voice webhook.
+2. **Inbound routing** maps `Called` number → org + agent. If no mapping: Say + Hangup (no AI).
+3. Create inbound session; `patient_phone` = `From`, `call_direction=inbound`.
+4. Same TwiML Stream. Preconnect usually does **not** run (stream starts immediately).
 
-### 5. Two VADs (this is a favorite interview question)
+**Shared after Stream connects:**
 
-**Gemini server VAD** is the turn-taker. Configured in `LiveConnectConfig.realtime_input_config.automatic_activity_detection`:
+1. **Pod admission** — if this server is at capacity, accept WebSocket then close **1013** so Twilio retries another pod. (Closing before accept = HTTP 403 — wrong signal.)
+2. Events: `connected` (store `streamSid`) → `start` (load agent, create conversation, start `GeminiLiveTwilioAdapter`) → `media` loop → `stop` (tear down).
+3. Adapter adopts preconnect **only if voice + locale match** — those are fixed on Gemini’s setup frame and cannot be changed mid-session.
+4. Three async loops start: **receive** (Gemini → us), **playout** (us → Twilio), **silence timeout** (dead air handling).
 
-- `disabled=False` — we do **not** use client activity control (`GEMINI_LIVE_CLIENT_ACTIVITY_CONTROL=False`). Native streaming needs Gemini to own start/end of speech.
-- Start sensitivity **HIGH**, end sensitivity **LOW** (catch speech quickly, do not cut off slow speakers).
-- `prefix_padding_ms` ≈ 300 — keep the start of the word.
-- `silence_duration_ms` ≈ **1200** (or **3500** in `slow_speech_mode`).
-- `activity_handling = START_OF_ACTIVITY_INTERRUPTS` — barge-in at the API.
+**What to say:** “We optimize time-to-first-word with preconnect on outbound ring. Inbound is colder but the media path is the same once the stream starts.”
 
-**Client-side “VAD” is not a second turn-taker.** It is a **send gate** so TV, far-field talkers, horns, and µ-law idle (~RMS 8) never reach Gemini. If we zero-fill too long, *we forge an end-of-turn* and the model talks over the caller. That is why mute/zero-fill are capped.
+### 3.2 During the conversation
 
-Activity for silence timers prefers **pre-filter RMS** so a quiet caller is not “dead air” after denoising.
+- Every ~20 ms: Twilio `media` event → decode µ-law → `send_audio` → DSP → gate → 16 kHz → Gemini.
+- Gemini streams back 24 kHz audio + transcripts + tool calls on the same connection.
+- We pace agent audio to real time; transcripts write in background tasks.
 
-### 6. Noise suppression
+### 3.3 Hangup
 
-Platform default **on**. Agent `noise_suppression_enabled=false` cannot turn it off unless `GEMINI_LIVE_NOISE_ALLOW_AGENT_DISABLE` (needed so quality categories stay Good).
+- Twilio `stop` → `pipeline.stop` → close WebSocket (so TwiML can Redirect for transfer).
+- Post-call: optional transcript script normalization (fix wrong alphabet, not translation).
+- Usage recorded to `gemini_live_usage` (billing source of truth).
 
-**Backends** (`GEMINI_LIVE_NOISE_BACKEND`):
+---
 
-| Backend | What it is | When |
-|---|---|---|
-| `rnnoise` (default) | RNNoise + AGC + SNR quality detector | Production default; near/far + music-like gates sit on this path |
-| `hush` | DeepFilterNet-SE (`weya_nc`) @ 8 kHz, 10 ms hop | Stronger denoise; extra scene gates are **RNNoise-only** (`_hush_dsp_only`) |
-| `classic_wiener` | Spectral Wiener | Fallback |
+## Part 4 — Audio IN: caller → Gemini (deep dive)
 
-Fail-open: if the native lib fails, send raw PCM rather than killing the call (`GEMINI_LIVE_NOISE_FAIL_OPEN`).
+This is where most production bugs live. Walk it in **plain language**, not as 17 bullet labels.
 
-**What DSP is defending against:**
+### What to say
 
-- Ambient noise / fans
-- TV / music beds (`MusicLikeGate`)
-- Far-field / speaker in the room (near-field confidence ~0.42 / hard reject ~0.22)
-- Transients (horns, slams) — attenuate, do not treat as barge-in
-- Quiet handset / whisper — AGC + `soft_speech` so we do not gate them out
-- Over-suppression — `GEMINI_LIVE_MAX_SPEECH_ATTENUATION_DB` (~8 dB) + raw-speech guard
+> “Twilio gives us small chunks of 8 kHz µ-law, base64 in JSON. First we **only keep the inbound track**. If we forward the outbound track — our own agent audio echoed back — Gemini thinks the caller is talking and we get **self barge-in**.
+>
+> We convert µ-law to linear PCM because all our DSP expects PCM. We batch about **100 ms** before sending upstream: fewer packets, but if the server event loop stalls we **cap** the buffer so we do not dump seconds of audio at once and trigger Gemini error **1011** (input too fast).
+>
+> Denoising runs **off the asyncio loop** — RNNoise by default, optional Hush (stronger). We also run AGC because quiet handset users are common on PSTN. Then we classify **near vs far** field and **music/TV** beds so background audio does not become ‘caller speech’.
+>
+> Important: our gate is **not** VAD. **Gemini’s server VAD** ends the turn after about **1.2 seconds** of silence in what we send. If we send too many zero-filled frames, we **fake** that silence and the model talks over the caller. So we cap destructive mutes at ~**400 ms** and then leak attenuated real audio instead.
+>
+> Finally we resample 8 kHz → **16 kHz** and call `send_realtime_input`. That is the only audio Gemini’s VAD sees.”
 
-Audio quality classes (`GOOD` / `LOW_VOLUME` / `NOISY_BACKGROUND`) tighten barge-in debounce and noise gates, and can trigger a **spoken warning** (“trouble hearing you”) with cooldown and max-once-per-call.
+### Why production does this
 
-Optional **AEC gate** (`GEMINI_LIVE_AEC_ENABLED`) — SimpleAecGate; off by default because Twilio inbound-only already removes most acoustic echo of *our* playback.
-
-### 7. Gemini Live API session
-
-`client.aio.live.connect(model, config)` with:
-
-- `response_modalities=["AUDIO"]` — native audio out, not text-then-TTS
-- Voice via `speech_config.voice_config` (Kore, Puck, …)
-- `language_code` is set **but native audio largely ignores it**; accent is locked in **system instruction** (`build_gemini_live_speech_instruction`)
-- `input_audio_transcription` + `output_audio_transcription` — both directions
-- Tools: `query_knowledge_base`, `end_call`, transfer/handoff, Canvas EMR, etc.
-- `session_resumption` (transparent handle) + `context_window_compression` (sliding window) so long calls do not die when context fills
-- Vertex-first (`GEMINI_USE_VERTEX=true`) → model `gemini-live-2.5-flash-native-audio`; AI Studio fallback uses a dated preview id
-
-Greeting: send a **text kickoff** user turn (`send_client_content`, `turn_complete=True`) so Gemini speaks the exact opening line from SI. That is cheaper/cleaner than hoping the model improvises.
-
-Receive loop handles: `server_content` (audio parts, transcripts, `interrupted`, `turn_complete`), `tool_call`, `session_resumption_update`, `go_away`, `usage_metadata`.
-
-### 8. Outbound / playout
-
-1. Audio parts → bounded `_outbound_queue` (lossless wait if full — **never drop the start of a sentence**).
-2. `_playout_loop` → `send_audio_paced`: 24 kHz → 8 kHz → µ-law → Twilio `media` JSON.
-3. Pacer sleeps per frame duration. If the loop is behind, yield and **rebase debt** (`GEMINI_LIVE_MAX_PACING_DEBT_MS`) instead of bursting.
-4. `_assistant_speaking` stays true until estimated Twilio playout finishes, not when the local queue empties (otherwise barge-in gates open too early).
-
-### 9. Barge-in (interruption)
-
-**Confirm, then interrupt.** Consecutive speech frames (3 = 300 ms, or 4 in `NOISY_BACKGROUND`). Greeting uses a higher RMS floor so connection artefacts (“k s t”) do not cut the hello.
-
-On Gemini `interrupted`:
-
-1. If first message is non-interruptible: **do not clear Twilio**; keep playing greeting; still capture caller transcript.
-2. Else: cancel playout, new outbound queue, flush assistant text as `interrupted=True`, send Twilio **`clear` after purging queued frames** (`send_clear_now`), re-anchor context to what the caller *actually heard* vs what Gemini generated (playout cursor ≠ generation cursor).
-3. False-interrupt recovery: if it was noise, resume after a quiet window.
-
-**Interrupt re-anchor:** Gemini truncates history at its generation cursor; we may have discarded seconds of unplayed audio. We inject a note of the unspoken tail so the model does not think it already asked the next question.
-
-### 10. Transcripts (interview-critical)
-
-Gemini streams:
-
-- `input_transcription` — caller (ASR on what we forwarded)
-- `output_transcription` — agent (what it is saying)
-
-**We do not run a separate STT.** Transcripts are a Live API feature. That means **gating audio also gates ASR**: if we mute the caller, there is no transcript.
-
-**Usability filter** (`assess_transcript_usability`) — structural only:
-
-- Reject empty, `{Unintelligible}` / `{}` / `[SYSTEM …]`
-- Allow numeric replies (OTP, dates)
-- **Do not drop** on script mismatch (Hinglish/Devanagari on an `en-US` agent is valid)
-
-Rejected turns are **still persisted** with `metadata.asr_rejected` + reason so the UI does not show a silent gap. They generally **do not authorize** a model turn (avoids stuck-recovery storms on junk ASR).
-
-Accepted turns:
-
-- Authorize the next model audio (`_authorize_model_response('user_transcript')`) — **one audio turn per caller authorization** so noise-triggered extra replies are dropped
-- Fire-and-forget DB write (`_spawn_turn_write`) so the receive loop never blocks on Postgres
-- Timeout + retry with shared `write_id` (idempotent); timeouts are event-loop stalls, not slow SQL (~2 ms path)
-- Script mismatch is an **annotation**, not a drop
-- Redis session turn append for live UI
-- Dialog-state slot fill + optional memory nudge into Gemini (not spoken)
-
-Interrupted agent speech is saved with `interrupted: true` — caller heard it; Gemini did not finish.
-
-**Post-call:** `transcript_script_normalizer` re-spells wrong alphabet (e.g. English words written in Devanagari) **without translating**. One LLM batch after hangup; zero live latency.
-
-**Internal transcripts:** silence prompts / noise warnings are injected as system text; Gemini sometimes echoes them into `input_transcription`. We match and ignore those so they do not look like the caller spoke.
-
-Preconnect greeting transcripts are buffered and drained onto the real callbacks so the conversation does not start at the caller’s first turn.
-
-### 11. Tools, RAG, call control
-
-Function calling on the same Live session (not a second LLM hop for the voice itself):
-
-- `query_knowledge_base` — org RAG; speculative prefetch; skip if KB confirmed empty
-- `end_call` — requires clear hangup / confirmation; playback timeout then Twilio hangup
-- `transfer_to_number` / Teams / `transfer_to_agent` (same Media Stream, swap Gemini session — not a conference until human transfer)
-- Canvas EMR, TMS, outreach when flagged
-
-Tool calls do **not** consume the one-turn audio authorization; the spoken answer after the tool result still plays.
-
-### 12. Call-level reliability
-
-| Mechanism | Why |
+| Problem on real phones | What we do |
 |---|---|
-| Silence ladder `9s, 16s, 23s, 32s` | “Are you still there?” then `end_call` |
-| Speech-hold | Long answers must not trigger silence prompts mid-utterance |
-| Stuck recovery | Model authorized but no audio — inject a nudge (capped) |
-| Noise-stall recovery | Continuous TV holds Gemini VAD open — inject “please repeat” |
-| `go_away` | Log time_left; session will die |
-| Session resumption handle | Stored for future reconnect-on-drop |
-| AMD / voicemail | Skip spoken noise/silence prompts in voicemail mode |
-| Usage ledger | `gemini_live_usage` log + conversation metadata + Redis — **source of truth for charging** (Live WS labels are unreliable in Cloud Billing) |
+| TV / room chatter | Near/far gate, music-like detector, noisy-environment prompt |
+| Quiet caller | AGC, `soft_speech` paths, do not gate on denoised RMS alone |
+| Echo of agent | Drop Twilio outbound track; mute inbound while agent speaks until barge confirmed |
+| Event loop lag | DSP in thread pool; inbound buffer cap; min ~100 ms between Gemini sends |
+| Over-denoising | `foreground_safe` blend (~10% raw + 90% filtered on speech) |
+
+### Numbers worth knowing (not memorizing every flag)
+
+- Twilio: **8 kHz** µ-law, ~**20 ms** per frame (160 bytes).
+- Into Gemini: **16 kHz** PCM16.
+- Server VAD silence: **1200 ms** (3500 ms in slow-speech mode).
+- Max consecutive zero-fill before leak: **4 frames (~400 ms)** — must stay below VAD silence.
+- Barge debounce: **3 frames (~300 ms)**, 4 if noisy.
+
+### What we got wrong (be honest in interviews)
+
+1. **Treating client gating as VAD** — Early confusion. We gate *what is sent*; Google *ends the turn*. Sending long silence is a bug on our side.
+2. **Too aggressive transcript rejection** — Rejecting wrong-script text deleted real Hinglish/Marathi. We now **annotate**, not drop; post-call script fix handles alphabet.
+3. **Stuck-recovery on junk ASR** — Authorizing model turns on `{Unintelligible}` caused recovery loops. Rejected placeholders no longer arm the stuck watchdog.
+4. **Too many env knobs** — Production tuning grew organically (dozens of `GEMINI_LIVE_*` flags). Works, but hard to reason about; a single “audio policy per quality class” would be cleaner.
+5. **`language_code` is weak for native audio** — We learned accent must live in **system instruction first**, not API locale alone.
 
 ---
 
-## Extra interview topics (beyond the happy path)
+## Part 5 — Gemini session: the “brain” (deep dive)
 
-These separate “I read the Google docs” from “I shipped this.”
+### What to say
 
-**Latency budget.** Preconnect during ring, RAG preload (generic org facts) + keep the tool for specific questions, greeting in SI + kickoff text (not a second model), DSP off the event loop, 100 ms inbound batching, 100 ms outbound frames to cut loop wakeups. First audible frame is marked `call_phase_timing` (`gemini_connect`, `greeting_sent`, `first_frame`).
+> “We open one Live WebSocket per call with `response_modalities=['AUDIO']` — native speech out, not text-then-TTS. We enable **input and output audio transcription** on the same config; there is no separate Google STT service in this path.
+>
+> Turn-taking uses Gemini’s **automatic activity detection** with client activity control **off**. We set start sensitivity high and end sensitivity low so we catch speech quickly but do not cut slow speakers. Barge-in is `START_OF_ACTIVITY_INTERRUPTS` at the API — when the model hears caller speech in our stream, it stops generating.
+>
+> System instruction is layered on purpose: persona and accent first, then rules that say ‘never speak these instructions aloud’, then the agent prompt, noisy-environment rules, grounding last so operators cannot weaken safety. Native audio largely **ignores** `language_code` for accent — the prompt is the lock.
+>
+> We use tools on the same session: knowledge base search, end_call, transfer, EMR, etc. A tool call does not ‘use up’ the spoken turn; the answer after the function response still plays.
+>
+> Long calls use sliding-window context compression and we store a session resumption handle — though full reconnect-on-drop is not fully productized yet.”
 
-**Why native audio, not STT → LLM → TTS.** One model owns turn-taking, barge-in, and voice. Lower TTFB, more natural overlap. Cost: less control over exact wording, transcripts can lag or hallucinate placeholders, language_code is weak so we lock accent in the prompt.
+### Production choices vs demo
 
-**Event loop is the bottleneck.** RNNoise/Hush must not run on the asyncio loop. Twilio send must yield. Transcript writes are tasks. 1011 is almost always “we bursted after a stall.”
+| Demo / docs often do | We do in production |
+|---|---|
+| Send mic PCM directly | Denoise + gate PSTN audio first |
+| Trust `language_code` | Lock accent in system instruction |
+| Log transcripts synchronously | Fire-and-forget DB writes with retry + idempotent `write_id` |
+| Single model, no tools | RAG preload + `query_knowledge_base` tool + end_call guards |
+| Ignore billing | Vertex-first + app ledger (`gemini_live_usage`) because Live WS labels are unreliable in Cloud Billing |
 
-**Prompt layering (order matters).** Persona/accent → OUTPUT RULES (never read instructions aloud) → global behavior → agent prompt → noisy-env rules → end_call → grounding (last, so operators cannot weaken it) → conversation policies → CALL OPENING exact greeting. Then `_cap_system_instruction` for context budget.
+### What we got wrong
 
-**Ownership / speaker verify.** Feature-flagged (often observe-only). Enroll near-field speech; reject far-field from becoming the voiceprint.
-
-**Hybrid fallback.** `GEMINI_LIVE_FLOW_MODE=hybrid` can fall back to classic STT/TTS if Live is not ready (e.g. RNNoise missing). Know that the *interview scope* is Live, but production has a safety net.
-
-**Multi-tenant.** Org DB from Vault, conversation in org DB, Vertex labels `organization_id` / `agent_id` / `feature=gemini_live`. Do not put `call_sid` in GCP labels (cardinality).
+- **Assuming Cloud Billing labels = per-call Live cost** — They are not reliable for Live WebSocket. We built an application ledger.
+- **Preconnect race** — Preconnect and cold-start paths had to agree on **locale resolution**; collapsing `en-IN` to `en-US` caused wrong accents depending on who won the race.
+- **Session resumption** — Handle is stored; automatic seamless reconnect on `go_away` is still a gap. Do not claim zero-downtime mid-call recovery unless you have shipped it.
 
 ---
 
-## 30 interview Q&A (answer like you built it)
+## Part 6 — Audio OUT: Gemini → caller (deep dive)
 
-Use the **short answer** first, then **one level deeper** if they nod.
+### What to say
 
-### Q1. Walk me through what happens when a caller says “hello.”
+> “Gemini sends 24 kHz PCM chunks on `model_turn` parts. We put them on a **bounded queue** and a dedicated playout task resamples to 8 kHz, encodes µ-law, and sends Twilio `media` JSON.
+>
+> We **pace** to real time — sleep per frame duration. If the event loop falls behind, we yield and **rebase** pacing debt instead of bursting frames into Twilio. Bursting sounds like glitches; delaying sounds like a slight lag — we choose delay.
+>
+> We also track `_assistant_speaking` until **estimated Twilio playout** finishes, not until our local queue is empty. If we clear that flag too early, barge-in gates open while the caller still hears the agent.
+>
+> We have a **turn guard**: native audio can emit extra spoken turns after noise. We only play audio authorized by a reason — user transcript, greeting, silence prompt, etc.
+>
+> The **only** time we intentionally drop outbound audio is **barge-in**: purge the queue, then send Twilio `clear`. If `clear` sits behind queued frames, the old sentence keeps playing — so purge first.”
 
-**Answer:** Twilio sends a `media` event with base64 µ-law. We keep inbound track only, decode to 8 kHz PCM, buffer ~100 ms, run RNNoise/AGC/near-far, gate as near-field speech, resample to 16 kHz, `send_realtime_input`. Gemini server VAD starts a user turn. After ~1.2 s of silence it ends the turn, emits `input_transcription` (“hello”), we persist it and authorize a model turn. Native 24 kHz audio arrives on `model_turn.parts`, we pace µ-law back to Twilio, and `output_transcription` is saved as the assistant message.
+### What production gets wrong (industry-wide, including us)
 
-### Q2. Why not send Twilio audio straight to Gemini?
-
-**Answer:** Twilio is 8 kHz µ-law; Gemini Live inbound wants 16 kHz PCM. More important: PSTN audio is full of TV, echo, and far-field speech. Gemini’s VAD will treat that as the caller and barge-in or hallucinate. Client DSP + gating is how we make native audio usable on real phone calls.
-
-### Q3. Where does VAD actually run?
-
-**Answer:** **Gemini’s automatic activity detection** decides turn boundaries and interruptions. Our code is a **pre-VAD send gate** (speech probability, RMS, near-field, transients). We explicitly leave `automatic_activity_detection.disabled=False` and `CLIENT_ACTIVITY_CONTROL=False` because native streaming needs the server to own activity.
-
-### Q4. What happens if your gate zeros audio for too long?
-
-**Answer:** Gemini sees `silence_duration_ms` (1200 ms) of silence and **ends the caller turn**, then talks over them. We cap consecutive mute/zero-fill at 4 frames (~400 ms) and then forward attenuated real audio so we never manufacture end-of-turn. Transcript-layer filters still catch leakage.
-
-### Q5. How does barge-in work end to end?
-
-**Answer:** While `_assistant_speaking`, inbound frames must look like a barge candidate (voiced, not transient, near-field, RMS above greeting floor). We buffer until N consecutive frames, then start forwarding. Gemini emits `interrupted`. We cancel playout, purge the outbound queue, send Twilio `clear` (so queued speech never plays), flush the assistant transcript as interrupted, and re-anchor unspoken content.
-
-### Q6. Why purge the queue before `clear`?
-
-**Answer:** `clear` appended *behind* queued frames means Twilio keeps playing the old sentence until the queue drains. With 100 ms frames that is a long, wrong tail. `send_clear_now` drops queued agent audio, then enqueues `clear`. That is the one case dropping audio is correct.
-
-### Q7. How do you stop the agent from interrupting itself (echo)?
-
-**Answer:** Only forward Twilio `inbound` track. Optional AEC. During agent speech, unconfirmed energy is muted. Greeting barge threshold is higher. Near/far + music-like gates kill TV. First message can be non-interruptible client-side while still capturing the caller’s words.
-
-### Q8. RNNoise vs Hush vs Wiener — which and why?
-
-**Answer:** Default **RNNoise**: good telephony speech/noise split, metrics for near/far and quality class. **Hush** (DeepFilterNet) is stronger suppression; we then skip RNNoise-only scene gates so we do not double-gate. **Wiener** is the classic fallback. Fail-open to raw if the native lib missing. Product default cannot be turned off per agent unless explicitly allowed.
-
-### Q9. What is `foreground_safe` audio mode?
-
-**Answer:** On detected speech we blend ~10% raw + 90% denoised so consonants survive. Background frames stay fully filtered. If attenuation exceeds ~8 dB on a near-field voiced frame, a raw-speech guard can pass original PCM so we do not crush the caller.
-
-### Q10. Why 16 kHz in and 24 kHz out?
-
-**Answer:** Those are Gemini Live native-audio rates in this stack (`GEMINI_LIVE_INBOUND_RATE=16000`, `OUTBOUND_RATE=24000`). Twilio is always 8 kHz. We resample at the edges and keep ratecv state.
-
-### Q11. Why buffer 5 inbound chunks? Why cap at 10?
-
-**Answer:** 5 × 20 ms ≈ 100 ms reduces WebSocket packet rate. If the event loop stalls, the buffer can explode; flushing it all at once is Gemini 1011. Cap 10 and keep the newest 5 — stale audio under lag is worse than a small gap.
-
-### Q12. How are transcripts produced? Do you have a separate STT?
-
-**Answer:** No separate STT. `input_audio_transcription` and `output_audio_transcription` on `LiveConnectConfig`. Fragments stream on `server_content`; we concatenate output until `turn_complete` (or interrupt). Quality of ASR is coupled to what we send — garbage in, `{Unintelligible}` out.
-
-### Q13. A transcript is wrong-script (English in Devanagari). Do you drop it?
-
-**Answer:** **No.** `detect_script_mismatch` is observation-only. Dropping it deleted real Hinglish/Marathi. We annotate `script_warning` on the live turn. After the call, `transcript_script_normalizer` re-spells alphabet without translating, with word-count bounds so the LLM cannot rewrite meaning.
-
-### Q14. What if ASR returns `{Unintelligible}`?
-
-**Answer:** `assess_transcript_usability` rejects `placeholder_or_internal_text`. We still **save** it as `asr_rejected` so the transcript is honest. We **do not** authorize a model turn or arm the stuck watchdog (that caused recovery storms). We may arm a short window so if Gemini still speaks, we do not TURN-GUARD it into silence.
-
-### Q15. How do you persist transcripts without hurting audio?
-
-**Answer:** `create_background_task` / `_spawn_turn_write` from the receive loop. Writes use `asyncio.wait_for` + retries and a `write_id` so a timed-out-but-committed insert is not duplicated. Strong refs on in-flight tasks because asyncio only holds weak refs. Failures log `[TRANSCRIPT-LOST]` + DB pool stats (including **vault** pool — org writes stall if vault is exhausted even when org pools look idle).
-
-### Q16. Interrupted agent text — keep or drop?
-
-**Answer:** **Keep, flag `interrupted`.** The caller already heard that audio. Dropping it makes the transcript disagree with the call recording. Downstream analysis must not treat it as a finished question.
-
-### Q17. How do you start the Gemini session fast enough for “hello”?
-
-**Answer:** `preconnect_gemini_live` during ringing, keyed by `call_sid`. Adapter **adopts** the session if voice + locale match (those are fixed on the setup frame — wrong voice cannot be rebound). If media already started, late preconnect discards itself (`_media_active_sids`). Cold path: connect on Twilio `start`. Greeting transcripts during ring are buffered so they are not lost.
-
-### Q18. Native audio ignores `language_code`. So how do you get an Indian English accent?
-
-**Answer:** We still send `language_code`, but the real lock is **system instruction first** (`PERSONA AND SPEECH` / `build_gemini_live_speech_instruction`). OUTPUT RULES say a generic “speak English” in the agent prompt must not override the accent. Locale resolution must match preconnect vs websocket path — we do **not** use the ElevenLabs mapper that collapsed `en-IN` → `en-US`.
-
-### Q19. How does the knowledge base work on a live call?
-
-**Answer:** Optional preload of generic RAG into the system prompt (hours, policies) if under `GEMINI_LIVE_KB_PRELOAD_MAX_CHARS`. Tool `query_knowledge_base` remains for specific questions. Speculative RAG on partial transcripts. If the collection is empty we set `_kb_confirmed_empty` so we do not embed every turn (~1 s) and trip stuck-recovery.
-
-### Q20. How does `end_call` not hang up too early?
-
-**Answer:** Tool description + prompt require explicit hangup or “I’m done” after goodbye. `GEMINI_LIVE_END_CALL_REQUIRE_USER_CONFIRM`, cooldown, and a disconnect classifier that ignores replies to *our* “your voice is too soft” warnings. We wait for goodbye audio to play (`DISCONNECT_PLAYBACK_TIMEOUT`) then Twilio hangup. Silence ladder can synthesize an `end_call` tool call after the last timeout.
-
-### Q21. What is turn authorization / TURN-GUARD?
-
-**Answer:** Native audio can emit extra turns after noise or a finished reply. We require an authorization reason (`user_transcript`, `initial_greeting`, silence prompt, etc.). Unauthorized audio is not played. Thought/text-only `model_turn` events do not consume the token — only audible parts do. New caller transcript rebinds a rejected pending turn.
-
-### Q22. How do you handle long calls and context limits?
-
-**Answer:** Cap system instruction size. Sliding-window `context_window_compression`. Session resumption handles. Dialog-state injects slot memory instead of relying on the model to remember every field. We still log `go_away`.
-
-### Q23. The agent asked two questions and then answered itself. How do you prevent that?
-
-**Answer:** SI: one question per turn, strict turn-taking, stop after asking. Dialog state tracks `pending_slot`. After barge-in, DIALOG-RESUME / interrupt re-anchor restores the pending question. This is prompt + state, not a hard decoder constraint — be honest that native audio can still drift; we mitigate, we do not formally constrain tokens.
-
-### Q24. Backpressure: what do you drop vs delay?
-
-**Answer:** **Delay** inbound-to-Twilio agent audio (bounded queue, playout waits). **Drop oldest inbound** only when the 8 kHz buffer exceeds 10 under loop lag. **Drop queued outbound** only on barge-in. Never drop the head of a sentence to “keep latency” — that sounds like the agent glitched.
-
-### Q25. How do you bill Gemini Live per customer?
-
-**Answer:** Vertex-first with labels (`feature=gemini_live`, org, agent). Live WebSocket labels are **unreliable** in Cloud Billing. Source of truth is the **app ledger**: `usage_metadata` merged in the receive loop, persisted as `gemini_live_usage` (duration + tokens) on the conversation, Redis backup, structured log. Invoice from that, not from Billing reports alone.
-
-### Q26. What is error 1011 and how did you fix it?
-
-**Answer:** Gemini Live rejects input sent too fast. Causes: flushing a huge inbound buffer after event-loop lag, no min send interval, DSP on the loop blocking then bursting. Fixes: buffer cap 10, min interval ~100 ms, DSP in a thread/executor, pacing debt rebase on outbound so we do not spin-dump frames.
-
-### Q27. How is this different from a classic STT → LLM → TTS voice bot?
-
-**Answer:** Classic: Google STT finals → orchestrator LLM → TTS chunks. We still have that stack (`VoicePipelineService`) as fallback. Live: one bidirectional audio model, server VAD, native voice, built-in ASR transcripts, tools on the same socket. Tradeoff: richer barge-in and lower latency vs weaker lexical control and more DSP responsibility on our side.
-
-### Q28. Walk through a noisy TV in the background.
-
-**Answer:** RNNoise marks low speech probability / high flatness; quality may latch `NOISY_BACKGROUND`. Near/far confidence stays low → send gate zeros far-field. Music-like gate can latch. Barge debounce adds a frame. If TV still holds VAD open with no accepted transcript, noise-stall recovery injects “please repeat” (rate-limited). Spoken noise warning at most once. Squelch exists but is off by default. Transcript placeholders are rejected without authorizing replies.
-
-### Q29. How do AI-to-AI agent handoffs work without dropping Twilio?
-
-**Answer:** Same Media Stream. `transfer_to_agent` validates org + max hops, mutes session A, returns the function response, then a background task starts session B with a new `GeminiLiveSession` (new prompt/voice). Comfort tone optional during the gap. Human transfer is different: conference / `<Dial>` after stream stop + Redirect.
-
-### Q30. If you had to debug “agent talked over the caller,” where do you look first?
-
-**Answer:** In order: (1) Did we zero-fill past VAD silence? Check `[GATE-MUTE-CAP]` / zero-fill streak. (2) Did TV pass the send gate? `audio_route`, `near_field_confidence`, `foreground_speech`. (3) Was barge-in confirmed on noise? greeting RMS, transients. (4) Did `_assistant_speaking` clear before Twilio finished playout? (5) Unauthorized extra model turn — TURN-GUARD logs. (6) Transcript of what Gemini thought it heard (`input_transcription` vs rejected). Correlate `session=` / `call_sid` / `[LATENCY]` / `[AUDIO-UTTERANCE]`.
+- **Dropping audio to reduce latency** — Sounds like the agent skipped words. We delay.
+- **Clear without purge** — Caller still hears half a sentence after they interrupted.
+- **Equating queue empty with caller heard** — Generation cursor and playout cursor diverge; drives re-anchor bugs after interrupt.
 
 ---
 
-## Bonus Qs (if they keep going)
+## Part 7 — Barge-in (deep dive)
 
-**Q31. Why is DSP off the event loop?**  
-~10 ms/chunk at 8 kHz × N calls starves Twilio send and Gemini receive. `run_dsp` uses a dedicated executor when enabled.
+### What to say
 
-**Q32. What does `START_OF_ACTIVITY_INTERRUPTS` mean vs muting on our side?**  
-API-level: Gemini stops generating when it detects user speech in the **audio we send**. If we mute, Gemini cannot interrupt even if the caller is talking — that is why we forward during non-interruptible greeting (capture speech) but ignore the interrupted event.
+> “While the agent speaks, we mute inbound by default. To interrupt, we need **confirmed** caller speech — not a horn, not TV, not µ-law idle noise. We debounce about 300 ms of consecutive speech frames; noisy environments need a bit more.
+>
+> During the **greeting**, we use a higher energy threshold so connection pops do not cut the hello. If the product says the first message is non-interruptible, we **ignore** Gemini’s `interrupted` for playback but still **capture** the caller’s transcript so we can answer their question on the next turn.
+>
+> When interrupt is real: cancel playout, flush what the agent said as `interrupted: true` in the transcript, purge outbound audio, send `clear`, and **re-anchor** — tell the model what the caller actually heard versus what it generated but never played.”
 
-**Q33. How do you keep µ-law idle from looking like speech?**  
-Idle RMS ~8. Barge candidates require RMS ≥ 20. Soft-speech floor ~25. Do not treat idle as activity.
+### Memory hook
 
-**Q34. Session resumption vs just reconnecting?**  
-We store a transparent resumption handle from `session_resumption_update`. Full reconnect-on-drop using that handle is prepared in config; today `go_away` / transport loss mainly ends the session and we notify connection lost. Do not claim seamless mid-call resume unless you have seen it shipped.
+**Confirm → interrupt → purge → clear → re-anchor**
 
-**Q35. How do you test this without placing calls?**  
-`process_inbound_pcm_for_gemini` and usability helpers are extracted without session deps. `GEMINI_LIVE_DUMP_INBOUND_WAV` dumps pre-gate 8 kHz and sent 16 kHz. Soak tests named by call ids in comments (e.g. false barge on greeting artefacts). Unit tests around hush / transcript usability.
+### What we got wrong
+
+- Letting **noise** confirm barge-in → agent stops mid-sentence on TV.
+- **Re-anchor** added after production incidents where Gemini thought it had already asked question two while the caller only heard question one.
 
 ---
 
-## Whiteboard numbers cheat sheet
+## Part 8 — Transcripts (deep dive)
 
-| Thing | Typical value | Meaning |
+### What to say
+
+> “Transcripts are not from a separate STT product. They are `input_transcription` and `output_transcription` on the Live session — ASR on the audio we forwarded in, and text aligned with native audio out.
+>
+> That coupling matters: if we gate the caller to silence, there is no input transcript. If PSTN quality is bad, you see `{Unintelligible}` — we treat that as **unusable** for authorizing the next model turn, but we **still save** it with `asr_rejected` so the UI does not show a fake silent gap.
+>
+> When the caller barges in, we keep assistant text the caller **already heard** and mark `interrupted: true` — the recording and transcript must agree.
+>
+> Writes are async with timeout and retry. A slow transcript write is usually event-loop stall, not slow SQL.
+>
+> After the call, optional script normalization fixes wrong **alphabet** (e.g. English words written in Devanagari) without translating — one batch LLM job, zero live latency.”
+
+### What we got wrong
+
+- Dropping rejected turns entirely → silent holes in conversation history.
+- Using script mismatch to **reject** live turns → deleted valid multilingual speech.
+- Blocking the receive loop on DB → fixed with `_spawn_turn_write` and strong refs on tasks.
+
+---
+
+## Part 9 — Tools, silence, reliability
+
+### Tools (short)
+
+- **`query_knowledge_base`** — Search org KB; optional preload of generic facts in system prompt; skip repeated embeds if KB is empty.
+- **`end_call`** — Requires explicit hangup or confirmed “I’m done”; waits for goodbye audio to finish playing.
+- **Transfer / handoff** — Human transfer uses conference/dial after stream ends; AI-to-AI handoff swaps Gemini session on the **same** Media Stream.
+
+### Silence ladder (dead air)
+
+Progressive prompts (~9s, 16s, 23s) then disconnect (~32s). **Speech-hold** prevents “are you still there?” while the caller is mid-long-answer. Silence timer resets on **meaningful** transcripts, not every noise blip.
+
+### Other reliability
+
+| Mechanism | Purpose |
+|---|---|
+| Stuck recovery | Model authorized but no audio — capped nudge |
+| Noise-stall recovery | TV holds VAD open — inject “please repeat” (rate-limited) |
+| `go_away` | Log; session will end |
+| AMD / voicemail | Suppress noise/silence prompts on machine |
+| Hybrid fallback | `GEMINI_LIVE_FLOW_MODE=hybrid` → classic STT/TTS if Live unavailable |
+
+---
+
+## Part 10 — Native audio vs cascaded (when they ask “why Gemini Live?”)
+
+**Say:**
+
+> “We chose native audio for latency and natural turn-taking on phone calls. The tradeoff is we own telephony DSP and we have less control over exact wording than TTS. We still keep a cascaded Google pipeline as fallback for hybrid mode.
+>
+> In production, native audio is not ‘plug Twilio into Gemini.’ It is a **telephony front-end** plus a **playback back-end** wrapped around one model socket.”
+
+| | Cascaded (STT→LLM→TTS) | Native (Gemini Live) |
 |---|---|---|
-| Twilio frame | 20 ms, 160 bytes µ-law | Protocol |
-| Inbound flush | 5 frames / 100 ms | Packet aggregation |
-| Gemini in / out | 16 kHz / 24 kHz PCM16 | Native audio |
-| Server VAD silence | 1200 ms (3500 slow) | End of caller turn |
-| Max zero-fill | 4 frames / 400 ms | Must stay < VAD silence |
-| Barge debounce | 3 frames (4 if noisy) | Confirm interrupt |
-| Greeting barge RMS | ~80–200 | Ignore connect pops |
-| Near-field threshold | ~0.42 | Far-field mute |
-| AGC target | −16 dBFS | Quiet handsets |
-| Min send interval | 100 ms | Avoid 1011 |
-| Silence disconnect | 9 / 16 / 23 / 32 s | Ladder |
-| Stream close when full | 1013 | Retry another pod |
+| Latency | Higher (chained) | Lower (single session) |
+| Barge-in | Cancel TTS + manage LLM state | API `interrupted` event |
+| Wording control | High (TTS) | Prompt + SI only |
+| Transcripts | Dedicated STT finals | Model ASR (quality ∝ audio sent) |
+| Our role | Orchestrate vendors | DSP + gate + pace + guard turns |
 
 ---
 
-## How to structure a 45-minute interview
+## Part 11 — Interview Q&A (short answer + one line deeper)
 
-1. **5 min — pitch + diagram** (Twilio WS → DSP → Gemini Live → paced µ-law; dual VAD).
-2. **10 min — audio path** (formats, RNNoise, gate mute cap, 1011).
-3. **10 min — barge-in + clear** (debounce, first-message guard, queue purge, re-anchor).
-4. **10 min — transcripts** (no separate STT, usability vs persist, interrupted flag, post-call script fix, non-blocking writes).
-5. **10 min — production** (preconnect, Vertex + usage ledger, silence/stuck, hybrid fallback, what you’d improve).
+Use these after the narrative sections. Lead with the **bold** line.
 
-If they only want architecture, stay at layers. If they want depth, pick **mute-cap** or **transcript authorization** — both are unique to this codebase and show you understand failure modes, not just the Google sample.
+**Q1. Caller says “hello” — what happens?**  
+Twilio `media` → decode → DSP → gate → 16 kHz → Gemini VAD → after ~1.2s silence, `input_transcription` → we persist and authorize reply → 24 kHz audio paced to Twilio.  
+*Deeper:* Authorization links caller transcript to the next spoken agent turn (turn guard).
+
+**Q2. Why not send Twilio audio straight to Gemini?**  
+Wrong rate/format plus PSTN noise triggers false VAD and barge-in.  
+*Deeper:* 8k µ-law → 16k PCM; gate TV/far-field/echo.
+
+**Q3. Where is VAD?**  
+**Gemini server VAD** turn-takes; we only pre-filter the stream.  
+*Deeper:* `CLIENT_ACTIVITY_CONTROL=false`; our gate must not forge 1.2s silence.
+
+**Q4. Gate zeros too long?**  
+Gemini ends caller turn and talks over them.  
+*Deeper:* Cap ~400 ms zero-fill; leak attenuated audio.
+
+**Q5. Barge-in end-to-end?**  
+Confirm speech → forward → `interrupted` → purge queue → `clear` → re-anchor transcript.  
+*Deeper:* Greeting uses higher RMS; first message can be non-interruptible.
+
+**Q6. Why purge before `clear`?**  
+`clear` behind queued audio still plays the old sentence.  
+*Deeper:* `send_clear_now` pattern.
+
+**Q7. Echo / self-interrupt?**  
+Drop Twilio outbound track; mute until barge confirmed.  
+*Deeper:* Near/far + music gates; optional AEC off by default.
+
+**Q8. RNNoise vs Hush?**  
+RNNoise default + scene metrics; Hush stronger denoise, different gate path.  
+*Deeper:* Fail-open to raw if native lib missing.
+
+**Q9. Separate STT?**  
+**No** — Live input/output transcription only.  
+*Deeper:* Gating audio gates ASR.
+
+**Q10. Wrong-script transcript?**  
+**Do not drop** — annotate; fix alphabet post-call.  
+*Deeper:* Hinglish is valid on `en-US` agents.
+
+**Q11. `{Unintelligible}`?**  
+Save as rejected; do not authorize next turn.  
+*Deeper:* Avoids stuck-recovery storms.
+
+**Q12. Transcripts vs audio path?**  
+Background tasks; retry with `write_id`.  
+*Deeper:* Never block receive loop on Postgres.
+
+**Q13. Preconnect?**  
+Open Gemini on `ringing`; adopt if voice+locale match.  
+*Deeper:* Buffer greeting transcripts until adapter binds.
+
+**Q14. Accent / locale?**  
+System instruction locks accent; `language_code` alone is insufficient.  
+*Deeper:* Preconnect and WS paths must resolve locale the same way.
+
+**Q15. Error 1011?**  
+Sending audio too fast after buffer stall.  
+*Deeper:* Cap buffer, min send interval, DSP off loop.
+
+**Q16. What do you drop under load?**  
+Almost nothing on agent audio (delay). Drop stale inbound overflow and barge-in queue only.  
+*Deeper:* Lossless outbound queue wait.
+
+**Q17. Bill per customer?**  
+App ledger `gemini_live_usage`, not Billing labels alone.  
+*Deeper:* Vertex labels best-effort; `call_sid` not in GCP labels.
+
+**Q18. Agent talked over caller — debug order?**  
+Zero-fill streak → far-field leakage → false barge → early `_assistant_speaking` clear → turn guard → input transcript vs rejected.  
+*Deeper:* Correlate `[GATE-MUTE-CAP]`, `[AUDIO-UTTERANCE]`, `session=`.
+
+**Q19. What would you improve?**  
+Pick one: real reconnect on `go_away`; playout vs generation cursor; fewer audio flags → one policy object.  
+*Deeper:* Shows ownership without attacking the system.
+
+**Q20. How is this different from a toy voice demo?**  
+Production adds admission control, pacing, dual-VAD discipline, transcript honesty, tool guardrails, billing ledger, and months of PSTN edge cases.  
+*Deeper:* Demo sends PCM; we gate PSTN.
 
 ---
 
-## What not to say
+## Part 12 — What NOT to say
 
-- “We use Gemini as TTS after an LLM.” This pipeline is **native audio-to-audio**.
-- “We implemented VAD instead of Google’s.” We **gate**; Google **turn-takes**.
-- “We drop audio under load to keep latency.” We delay; we drop only barge-in and stale inbound overflow.
-- “Wrong-script transcripts are discarded.” They are annotated and fixed post-call.
-- “language_code sets the accent.” It is insufficient; SI locks it.
-- “Cloud Billing labels are how we invoice Live.” Ledger is source of truth.
+| Wrong | Right |
+|---|---|
+| “Gemini is our TTS.” | Native audio-to-audio on one Live socket. |
+| “We implemented our own VAD.” | We **gate** sends; Gemini **turn-takes**. |
+| “We drop audio to keep latency.” | We **delay**; drop only barge-in + stale inbound cap. |
+| “Bad transcripts are discarded.” | Rejected turns still saved; script fix is post-call. |
+| “`language_code` sets accent.” | System instruction locks accent. |
+| “Billing labels invoice Live calls.” | App ledger is source of truth. |
+| “We seamlessly reconnect on disconnect.” | Resumption handle stored; full reconnect not fully shipped. |
 
 ---
 
-## Suggested closer (if they ask “what would you improve?”)
+## Part 13 — Quick reference (draw first on whiteboard)
 
-Pick one honest gap: (1) use the resumption handle to actually reconnect on `go_away` without dropping the PSTN leg; (2) tighter coupling of playout cursor vs Gemini generation for re-anchor; (3) make TURN-GUARD and DSP thresholds less of a flag jungle by promoting a single audio-policy object per call quality class. That shows ownership without trashing the system.
+```
+CALL SETUP (differs)     →  TwiML Stream  →  SAME AUDIO PATH AFTER start
+
+AUDIO IN:  phone → µ-law 8k → PCM 8k → DSP/gate → PCM 16k → Gemini
+AUDIO OUT: Gemini → PCM 24k → queue → PCM 8k → µ-law paced → phone
+
+GEMINI:    server VAD · native audio · transcripts · tools · interrupted
+
+BARGE-IN:  confirm → interrupt → purge → clear → re-anchor
+```
+
+| Constant | Value | Why |
+|---|---|---|
+| Twilio rate | 8 kHz µ-law | PSTN / Media Streams |
+| Gemini in / out | 16 kHz / 24 kHz | Native audio API |
+| VAD silence | 1200 ms | End of caller turn |
+| Zero-fill cap | ~400 ms | Do not fake end-of-turn |
+| Barge debounce | ~300 ms | Confirm real speech |
+| Min Gemini send gap | ~100 ms | Avoid 1011 |
+| Pod full WS close | 1013 | Retry another instance |
+
+---
+
+## Part 14 — Suggested 45-minute interview flow
+
+1. **5 min** — Opening script + whiteboard strip (Part 13).
+2. **10 min** — Audio IN (Part 4) + “what we got wrong” on zero-fill.
+3. **10 min** — Barge-in (Part 7) + outbound pacing (Part 6).
+4. **10 min** — Transcripts (Part 8) + no separate STT.
+5. **10 min** — Production topics: preconnect, billing ledger, hybrid fallback, honest gaps (Parts 5, 9, 10).
+
+If they go deep on one area, stay there. Depth on **mute-cap** or **transcript authorization** beats reciting the whole pipeline.
