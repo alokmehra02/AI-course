@@ -17,6 +17,7 @@ production, fine-tuning vs RAG) and ties everything into one study plan.
 | **1 week before interview** | [00 Playbook](./00_Interview_Playbook.md) + [04 MCP & Agents](./04_MCP_Tools_Agentic_AI_QA.md) + Infosys [04](../Infosys_Interview_Prep/04_LangChain_LangGraph_Agents_QA.md) |
 | **Learning from scratch** | Week 1 below → Artifacts lesson 1 + `examples/lesson_1_*` |
 | **RAG-focused round** | Infosys [02](../Infosys_Interview_Prep/02_RAG_Deep_Dive_QA.md) + [06](../Infosys_Interview_Prep/06_RAG_Pipeline_Step_by_Step.md) + [System Design Module 14](../System_Design_Prep/14_AI_LLM_System_Design.md) |
+| **1M docs / delete-update (strong track)** | [RAG_Million_Docs_Interview](../RAG_Million_Docs_Interview/README.md) — designs 01–02 + 100 Qs |
 | **Agentic / MCP round** | [04 MCP](./04_MCP_Tools_Agentic_AI_QA.md) + Artifact [lesson 7](../Artifacts/lesson_7_mcp_and_tool_calling.md) + `examples/lesson_7_mcp/` |
 | **Gemini Live voice (VoXgent)** | [Interview guide](./GEMINI_LIVE_VOICE_AGENT_INTERVIEW_GUIDE.md) · [Complete reference](./GEMINI_LIVE_VOICE_AGENT_INTERVIEW_GUIDE_COMPLETE.md) · [Pipeline whiteboard (MD)](./gemini-live-pipeline-whiteboard.md) · [Canvas](./gemini-live-pipeline-whiteboard.canvas.tsx) |
 

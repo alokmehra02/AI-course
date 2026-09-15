@@ -13,6 +13,7 @@ Personal learning repo for **Generative AI**, **RAG**, **LangChain**, **LangGrap
 AI-course/
 ├── README.md                          ← You are here
 ├── AI_Engineer_Prep/                  ← AI / agentic AI interview prep (Q&A + 12-week path)
+├── RAG_Million_Docs_Interview/        ← 1M-doc RAG design + 100 Q&A (your strong track)
 ├── Artifacts/                         ← Course notes (markdown lessons 1–7)
 ├── examples/                          ← Runnable Python examples
 │   ├── llm_clients/                   ← Basic LLM API clients
@@ -148,6 +149,22 @@ See [AI_Engineer_Prep/README.md](./AI_Engineer_Prep/README.md) for the full topi
 
 ---
 
+## RAG at scale (`RAG_Million_Docs_Interview/`)
+
+Your **strongest interview track** — design for **1 million documents**, cloud vs local
+ingest, **update/delete** of chunks, plus AI depth (chunking, cosine, hybrid, Graph-RAG).
+
+| # | File | Focus |
+|---|------|--------|
+| 01 | [1M Docs Architecture](./RAG_Million_Docs_Interview/01_Design_1M_Documents_Architecture.md) | End-to-end system design |
+| 02 | [Cloud vs Local + Update/Delete](./RAG_Million_Docs_Interview/02_Design_Cloud_vs_Local_Ingest_Update_Delete.md) | Lifecycle, versioning, stale chunks |
+| 03 | [System Design Q&A (50)](./RAG_Million_Docs_Interview/03_QA_System_Design_Ingestion_Lifecycle.md) | Architecture speakable answers |
+| 04 | [AI Pipeline Q&A (50)](./RAG_Million_Docs_Interview/04_QA_AI_Pipeline_Chunk_Embed_Search_GraphRAG.md) | Chunk → embed → hybrid → Graph-RAG |
+
+See [RAG_Million_Docs_Interview/README.md](./RAG_Million_Docs_Interview/README.md) for the 7-day drill plan.
+
+---
+
 ## System design prep (`System_Design_Prep/`)
 
 Full system design interview study material — 17 modules covering everything from
@@ -173,6 +190,7 @@ See [System_Design_Prep/README.md](./System_Design_Prep/README.md) for the study
 
 - **Learn (week 1):** `Artifacts/lesson_1_llm_fundamentals.md` + `examples/lesson_1_llm_fundamentals/`
 - **AI interview:** `AI_Engineer_Prep/00_Interview_Playbook.md` → `04` (MCP) + Infosys `02` (RAG)
+- **RAG strong track (1M docs):** `RAG_Million_Docs_Interview/01` + `03`/`04` (100 Qs)
 - **System design:** `System_Design_Prep/00_Interview_Playbook.md`
 - **12-week AI path:** `AI_Engineer_Prep/README.md`
 - **RAG pipeline:** `Infosys_Interview_Prep/06_RAG_Pipeline_Step_by_Step.md`
