@@ -1,39 +1,83 @@
-# Walkthrough — Influencer Vetting (Public)
+# Interview Script — Influencer Vetting (Public)
 
-Website: screen creator history, audience authenticity, brand-safety risk before signing.
+**Website:** Screen creator history, audience authenticity, brand-safety risk before a brand signs.  
+**Round:** ~60 min LLD + Python  
+**Patterns:** Facade · Strategy · (optional Template Method)
 
-## 1-hour plan
+---
 
-- Design report flow  
-- Code Facade + Strategy scorers  
-- Cover empty content + REJECT/REVIEW/APPROVE  
+## PART 0 — Opening (say)
 
-## Clarify
+> “I’ll design Phyllo’s Influencer Vetting report API: pull public profile/content signals, run authenticity and brand-safety checks as Strategies, and return APPROVE / REVIEW / REJECT. Then I’ll code VettingService in Python.”
 
-- Public content for v1; consented extras optional later  
-- Sync report in interview; async job in prod  
-- Brand categories / blocked topics as input  
+**Restate:**
 
-## Design
+> “Before contract, a brand wants a report: engagement quality, authenticity score, safety flags with evidence, and a recommendation. Public data for v1; consented metrics can plug in later. OK?”
 
-**Entities:** VettingRequest, ContentItem, SafetyFlag, VettingReport  
+---
 
+## PART 1 — Clarifiers (ask)
+
+> “1. Phyllo vetting product or customer app?  
+> 2. Public only for v1, or also consented audience?  
+> 3. Sync report in interview vs async job in prod?  
+> 4. Which blocked categories matter — hate, scam, alcohol, etc.?  
+> 5. How much content history — last N posts?”
+
+**Assume:**
+
+> “Phyllo API, public v1, compute inline for interview / async in prod, last N contents provided as input, heuristic scorers.”
+
+---
+
+## PART 2 — Requirements (say)
+
+> “Functional: create report by handle/platform, score authenticity, scan brand safety, recommend, fetch report by id.  
+> Non-functional: pluggable scorers, explainable flags with evidence content ids, multi-tenant developer_id if needed.”
+
+---
+
+## PART 3 — Design + patterns (say)
+
+> “**Facade:** VettingService is one entry — callers don’t wire scorers.  
+> **Strategy:** AuthenticityScorer and BrandSafetyScanner are replaceable (heuristic today, ML tomorrow).  
+> Optional **Template Method:** load → analyze → recommend → save.”
+
+Diagram:
+```text
+POST /vetting/reports
+        ↓
+  VettingService (Facade)
+     ├─ AuthenticityScorer (Strategy)
+     ├─ BrandSafetyScanner (Strategy)
+     └─ ReportStore
+```
+
+**Entities:** `ContentItem`, `SafetyFlag`, `VettingReport`  
 **API:**
-
 ```text
 POST /v1/vetting/reports
 GET  /v1/vetting/reports/{id}
 ```
 
-**Flow:** load profile/contents -> authenticity Strategy -> safety Strategy -> recommend -> save  
+**Flow:**
+1. Create report PENDING  
+2. If no content → FAILED / NO_CONTENT  
+3. Compute engagement rate  
+4. Strategy authenticity score  
+5. Strategy safety scan → flags  
+6. Recommend APPROVE/REVIEW/REJECT  
+7. Mark READY  
 
-**Patterns:**
+---
 
-- Facade: VettingService  
-- Strategy: AuthenticityScorer, BrandSafetyScanner  
-- Template Method (optional): load -> analyze -> recommend -> save  
+## PART 4 — Transition to code (say)
 
-## Code to write
+> “I’ll code models, BrandSafetyScanner, AuthenticityScorer, and VettingService.create_report with recommendation logic.”
+
+---
+
+## PART 5 — CODE
 
 ```python
 from __future__ import annotations
@@ -62,7 +106,7 @@ class ContentItem:
 @dataclass
 class SafetyFlag:
     code: str
-    severity: str
+    severity: str  # low|medium|high
     evidence_content_id: str
 
 
@@ -80,6 +124,7 @@ class VettingReport:
 
 
 class BrandSafetyScanner:
+    """Strategy-like policy pack."""
     RISK_KEYWORDS = {"hate": "high", "scam": "high", "alcohol": "medium"}
 
     def scan(self, contents: list[ContentItem], blocked: list[str]) -> list[SafetyFlag]:
@@ -94,6 +139,8 @@ class BrandSafetyScanner:
 
 
 class AuthenticityScorer:
+    """Strategy: heuristic now, ML later."""
+
     def score(self, followers: int, avg_likes: float, engagement_rate: float) -> float:
         if followers <= 0:
             return 0.0
@@ -101,7 +148,7 @@ class AuthenticityScorer:
         gap = abs(expected - engagement_rate)
         raw = 1.0 - min(gap * 10, 1.0)
         if engagement_rate > 0.25 and followers > 50_000:
-            raw *= 0.7
+            raw *= 0.7  # suspiciously high
         return round(max(0.0, min(raw, 1.0)), 3)
 
 
@@ -142,20 +189,68 @@ class VettingService:
         report.recommendation = self._recommend(auth, flags)
         return report
 
+    def get_report(self, report_id: str) -> Optional[VettingReport]:
+        return self._reports.get(report_id)
+
     def _recommend(self, auth: float, flags: list[SafetyFlag]) -> str:
         if any(f.severity == "high" for f in flags):
             return "REJECT"
         if auth < 0.5 or flags:
             return "REVIEW"
         return "APPROVE"
+
+
+if __name__ == "__main__":
+    svc = VettingService(BrandSafetyScanner(), AuthenticityScorer())
+    contents = [
+        ContentItem("c1", "Love this routine", 4000, 100, 80000),
+        ContentItem("c2", "avoid this scam", 50, 20, 1000),
+    ]
+    r = svc.create_report("maya", "instagram", 120_000, contents, ["scam", "hate"])
+    assert r.recommendation in {"REJECT", "REVIEW"}
+    assert any(f.code == "scam" for f in r.safety_flags)
 ```
 
-## Say this
+### Say while coding
 
-> "VettingService is a Facade. Scorer and scanner are Strategies I can replace with ML later."
+> “VettingService is Facade.”  
+> “Scorer and scanner are Strategies injected in constructor.”  
+> “Every safety flag keeps evidence_content_id for explainability.”  
+> “In prod this returns PENDING and a worker fills READY.”
 
-## Follow-ups
+---
 
-- Async: return PENDING, worker fills READY  
-- Evidence links for each flag  
-- Consented audience metrics as later Strategy input  
+## PART 6 — Edge cases (say)
+
+> “No content → FAILED.  
+> High severity flag → REJECT.  
+> Low authenticity alone → REVIEW.  
+> Async: API returns report_id immediately; poll GET.  
+> Consented audience later = extra Strategy input, same Facade.”
+
+---
+
+## PART 7 — Follow-ups
+
+| Q | Say |
+|---|-----|
+| Fake followers? | Authenticity Strategy from engagement plausibility; not magic ML in interview |
+| Facade vs God class? | Delegates to strategies; doesn’t own platform fetch details |
+| Why not one function? | Can’t swap safety policy per brand category cleanly |
+
+---
+
+## PART 8 — Close (say)
+
+> “Built Influencer Vetting as a Facade over authenticity and brand-safety Strategies, returning an explainable report with APPROVE/REVIEW/REJECT. Coded create_report end-to-end; production would run analyze async.”
+
+---
+
+## Timebox
+
+| Min | Do |
+|-----|-----|
+| 0–8 | Clarify |
+| 8–20 | Design + patterns |
+| 20–50 | Code |
+| 50–60 | Edges + close |
