@@ -228,6 +228,79 @@ if __name__ == "__main__":
 
 ---
 
+## PART 5B — Logic explained (say this if they ask “how does verify / summarize work?”)
+
+### Why Adapter on income?
+
+YouTube raw might look like:
+```json
+{"id": "t1", "amount": 100, "amount_usd": 100, "date": "2026-09-01"}
+```
+TikTok might look like:
+```json
+{"txn_id": "t9", "gross": 40, "gross_usd": 40, "occurred_on": "2026-09-02"}
+```
+
+> “Same canonical `IncomeTransaction`, different field paths. Adapters absorb that. IncomeService never branches on platform strings for mapping.”
+
+### Consent gate
+
+```text
+grant_consent(account_id) → add to allow-set
+add_transaction / ingest_raw:
+  if account_id not in allow-set → PermissionError
+```
+
+> “Verified income is **consented**. Without grant, we refuse writes. That’s the product difference vs estimating income from followers.”
+
+### Idempotent upsert
+
+```text
+key = (account_id, platform_txn_id)
+self._txns[key] = txn   # insert or overwrite
+```
+
+> “Sync jobs and webhooks retry. Same payout id twice must not double-count in summarize. Natural key = platform’s transaction id scoped to the connected account.”
+
+### `ingest_raw` vs `add_transaction`
+
+```text
+ingest_raw(platform, raw)
+  → Factory.create(platform)
+  → adapter.to_canonical(...)
+  → add_transaction(canonical)
+```
+
+> “Fetch/IO can live outside; mapping is pure; service enforces consent + storage.”
+
+### `summarize` math
+
+```text
+for each stored txn:
+  if txn.user_id != requested user: skip
+  if occurred_on not in [start, end]: skip
+  total_usd += amount_usd
+  by_category[category] += amount_usd
+  by_account[account_id] += amount_usd
+```
+
+**Example:**
+- Sep 1: YouTube ads +$100  
+- Sep 2: TikTok subs +$40 (after consent on that account)  
+- Summary Sep 1–30 → `total_usd=140`, by_category `{AD_REVENUE:100, SUBSCRIPTION:40}`
+
+> “We aggregate **amount_usd** so multi-currency doesn’t break totals. Original `amount`+`currency` stay on the txn for audit.”
+
+### On-read vs materialized statements
+
+> “This summarize is **on-read** — simple and always fresh when late txns arrive. If a user has millions of txns, I’d materialize monthly snapshots and invalidate on ingest.”
+
+### What “verified” means (say clearly)
+
+> “Verified ≠ predicted from follower count. Verified = platform-sourced ledger rows collected after explicit consent, normalized, and summed.”
+
+---
+
 ## PART 6 — Edge cases (say)
 
 > “Consent revoked → remove from set + stop sync + optionally purge.  

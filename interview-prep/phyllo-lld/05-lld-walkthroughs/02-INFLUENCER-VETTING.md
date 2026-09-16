@@ -220,6 +220,91 @@ if __name__ == "__main__":
 
 ---
 
+## PART 5B — Logic explained (say this if they ask “how do scores / recommend work?”)
+
+### End-to-end compute path
+
+```text
+contents empty? → FAILED / NO_CONTENT
+else:
+  engagement_rate = (sum likes+comments) / sum(views)
+  authenticity     = AuthenticityScorer(...)
+  safety_flags     = BrandSafetyScanner(...)
+  recommendation   = rules on (auth, flags)
+  status           = READY
+```
+
+### Engagement rate
+
+```text
+engagement_rate = total_interactions / total_views
+total_interactions = Σ (likes + comments)
+```
+- Views `or 1` avoids divide-by-zero.  
+- Interview simplification: we use views as the denominator; brands may prefer followers or impressions — say that out loud.
+
+> “This is a rough quality signal for the content set we scanned — not a platform-official ER.”
+
+### `BrandSafetyScanner.scan`
+
+```text
+for each post text (lowercased):
+  for each risk keyword → severity:
+    if keyword in text AND (no blocked filter OR keyword in blocked_categories):
+      emit SafetyFlag(code, severity, evidence_content_id=post.id)
+```
+
+- **Keyword → severity map** is a stand-in for a policy pack / classifier.  
+- `blocked_categories` lets a beauty brand care about `alcohol` while another brand might not pass that list.  
+- If `blocked` is empty, we flag any matched risk keyword (demo behavior).  
+- **evidence_content_id** makes the report explainable — “rejected because post c2 contained scam.”
+
+> “In production this Strategy becomes an ML/moderation service; the Facade stays the same.”
+
+### `AuthenticityScorer.score`
+
+Goal: return **0..1** — higher = more believable audience/engagement.
+
+```text
+expected = avg_likes / followers
+gap = |expected - engagement_rate|
+raw = 1.0 - min(gap * 10, 1.0)
+if engagement_rate > 0.25 and followers > 50_000: raw *= 0.7
+return clamp(raw, 0..1)
+```
+
+**What this means in words:**
+
+1. **expected** ≈ “if likes were spread across followers, what ER-like ratio do we see?”  
+2. Compare to the **observed engagement_rate** from the content sample.  
+3. Large **gap** → suspicious → score drops (`gap * 10` scales sensitivity; gap ≥ 0.1 → score floor path).  
+4. Extra penalty: **very high ER (>25%) on a large account (>50k)** often looks inflated → multiply by 0.7.  
+5. Clamp to `[0, 1]`.
+
+> “This is a **heuristic Strategy**, not a paper-grade fake-follower model. I’m showing a pluggable authenticity signal brands can threshold on.”
+
+**Worked intuition:**
+- Healthy creator: likes/followers roughly consistent with content ER → small gap → score near 1.  
+- Bought followers: high followers, weak likes → big gap → low score.  
+- Engagement pods / weird spikes: high ER on big account → penalty.
+
+### `_recommend` decision table
+
+| Condition | Result | Why |
+|-----------|--------|-----|
+| Any flag with `severity == "high"` | **REJECT** | Hard brand-safety fail |
+| `authenticity < 0.5` | **REVIEW** | Audience looks shaky — human check |
+| Any flags (even medium) | **REVIEW** | Soft risk — don’t auto-approve |
+| Else | **APPROVE** | Clear enough for v1 automation |
+
+> “Reject is reserved for high-severity safety. Authenticity problems usually need human REVIEW, not silent reject — false positives hurt creator marketplace products.”
+
+### Why Strategies instead of if/else in the service?
+
+> “Beauty brand vs alcohol brand want different safety packs. ML authenticity replaces heuristic later. Constructor injection keeps VettingService stable.”
+
+---
+
 ## PART 6 — Edge cases (say)
 
 > “No content → FAILED.  

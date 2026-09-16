@@ -199,6 +199,79 @@ if __name__ == "__main__":
 
 ---
 
+## PART 5B — Logic explained (say this if they ask “how does verification decide?”)
+
+### Core idea
+
+```text
+claims  = what applicant says they own   (platform, handle)
+proofs  = what Connect/OAuth proved      (platform, handle, external_account_id)
+match   = same platform + same handle (case-insensitive)
+```
+
+> “Public handle matching alone is weak — anyone can type @maya. Proof comes from official account connect.”
+
+### `evaluate` decision table
+
+```text
+matched = number of claims that appear in proof_keys
+
+if no claims           → FAILED
+if matched == all      → VERIFIED  (+ set verified_at)
+if matched == 0        → FAILED
+if 0 < matched < all   → NEEDS_REVIEW
+```
+
+**Example:**
+- Claims: IG `@MayaMakes`, YT `@MayaTech`  
+- Proof only IG `@mayamakes` → matched 1/2 → **NEEDS_REVIEW**  
+- Add YT proof → matched 2/2 → **VERIFIED**
+
+### Why case-insensitive handles?
+
+> “Users type MayaMakes; platform returns mayamakes. Lowercasing avoids false NEEDS_REVIEW.”
+
+### `ALLOWED_TRANSITIONS` (State pattern)
+
+```text
+OPEN         → VERIFIED | FAILED | NEEDS_REVIEW
+NEEDS_REVIEW → VERIFIED | FAILED
+VERIFIED     → (none)
+FAILED       → (none)
+```
+
+> “Terminal states don’t silently flip. If we need to reopen, create a **new case** — keeps audit history clean for lending/immigration.”
+
+### `_transition` guard
+
+```text
+if new_status != current AND new_status not in ALLOWED[current]:
+  raise ValueError
+else set status + notes
+```
+
+> “Notes store why we decided — ‘partial 1/2’ — useful for case-ready reporting.”
+
+### When do we call `evaluate`?
+
+> “After every `attach_proof`. First proof may land NEEDS_REVIEW; later proof can promote to VERIFIED. That matches real Connect flows where accounts are linked one-by-one.”
+
+### Facade responsibilities
+
+| Method | Does |
+|--------|------|
+| `create_case` | OPEN + store claims |
+| `attach_proof` | append proof + re-evaluate |
+| `get` | read model for API |
+
+> “Callers don’t manipulate status enums directly — they go through the service so transitions stay legal.”
+
+### What we intentionally don’t do in v1
+
+> “No continuous monitoring here — that’s screening. No PDF renderer — status + notes + timestamps are enough to show the LLD; report export is an extension.”
+
+---
+
 ## PART 6 — Edge cases (say)
 
 > “No claims → FAILED.  

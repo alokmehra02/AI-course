@@ -190,6 +190,75 @@ if __name__ == "__main__":
 
 ---
 
+## PART 5B — Logic explained (say this if they ask “how do ingest / SoV work?”)
+
+### `ingest` pipeline (order matters)
+
+```text
+1. key = (platform, post_id)
+2. if key in seen → return False   # duplicate, do nothing
+3. mark seen
+4. sentiment = SentimentStrategy.label(text)
+5. append to mention store
+6. notify every AlertObserver
+7. return True
+```
+
+> “Dedupe **before** classify and SoV. Same viral post reshared into our pipe twice must count once, or BrandA’s share of voice is lying.”
+
+### Why `(platform, post_id)`?
+
+> “IDs are only unique inside a platform. IG id `123` and YT id `123` are different posts — so platform is part of the key.”
+
+### `KeywordSentiment.label`
+
+```text
+lowercase text
+if contains love/great/awesome → positive
+else if contains hate/scam/worst → negative
+else → neutral
+```
+
+> “Interview stand-in for a real NLP/LLM classifier Strategy. Negative keywords are checked second so we don’t need fancy precedence — first match wins in this tiny demo. Production Strategy returns probabilities and language codes.”
+
+**Limitation to admit:**
+> “Keyword lists miss sarcasm and non-English. That’s why it’s behind an interface — swap without rewriting ListeningService.”
+
+### `NegativeAlerter` (Observer)
+
+```text
+on_mention:
+  if sentiment == negative → keep alert
+```
+
+> “Ingest doesn’t know about Slack/email. Observers subscribe. I can add a WebhookAlerter later with zero changes to ingest.”
+
+### `share_of_voice` math
+
+```text
+For mentions in this watch_id whose brand ∈ requested brands:
+  count[brand] += 1
+  total += 1
+SoV[brand] = count[brand] / total   (0 if total == 0)
+```
+
+**Example:**
+- Watch has BrandA mention, BrandB mention → each **0.5**  
+- Three BrandA, one BrandB → BrandA **0.75**, BrandB **0.25**  
+- No mentions → all brands **0.0** (don’t divide by zero)
+
+> “SoV here is **mention share**, not reach-weighted share. I’d say that explicitly — reach-weighted SoV is a later Strategy that weights by views/followers.”
+
+### Why filter by `brands` list?
+
+> “Caller asks ‘SoV among Coke vs Pepsi’. Mentions of random other brands in the same watch don’t dilute this comparison if we pass only those two brands.”
+
+### Listening vs monitoring (say if asked)
+
+> “Monitoring = react to each mention. Listening = aggregates like SoV/sentiment trends. Same ingest pipeline feeds both.”
+
+---
+
 ## PART 6 — Edge cases (say)
 
 > “Duplicate post → ingest returns False.  

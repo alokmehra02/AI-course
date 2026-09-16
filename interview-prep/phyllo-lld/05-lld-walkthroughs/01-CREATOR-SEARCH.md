@@ -210,6 +210,83 @@ if __name__ == "__main__":
 
 ---
 
+## PART 6B — Logic explained (say this if they ask “how does ranking work?”)
+
+### Two-step pipeline (important)
+
+> “Search is **filter first, then rank**. Filters are hard constraints — if you fail a filter you’re out. Ranking only runs on survivors so we don’t waste work and we don’t let a high score override ‘must be in US / beauty’.”
+
+### `_matches` — hard filters
+
+| Check | Meaning |
+|-------|---------|
+| `platforms` | Creator’s platform must be in the requested list (empty list = no restriction) |
+| `countries` | Same for country |
+| `followers` | Must sit inside `[min_followers, max_followers]` |
+| `min_engagement` / `min_growth` | Floor thresholds |
+| `niches` | At least **one** overlap between query niches and creator niches (`set` intersection) |
+
+> “Empty filter lists mean ‘don’t care’. That’s why `if f.platforms and ...` — empty skips the check.”
+
+### `BalancedRanker.score` — weighted blend
+
+We turn four signals into **one score roughly in 0..1**, then sort descending.
+
+**1) Niche match (weight 0.40)**
+```text
+niche_bonus = |query_niches ∩ creator_niches| / |query_niches|
+```
+- Query `["beauty"]`, creator `["beauty","skincare"]` → overlap 1/1 = **1.0**  
+- Query `["beauty","fitness"]`, creator only beauty → 1/2 = **0.5**  
+- No niches in query → bonus stays **0** (niche not part of this search intent)
+
+> “Niche gets the highest weight because brands care about topical fit more than raw growth.”
+
+**2) Engagement (weight 0.25)**
+```text
+min(engagement_rate / 0.10, 1.0)
+```
+- `engagement_rate` is a fraction (0.047 = 4.7%).  
+- We treat **10% engagement as “full marks”** for interview simplicity.  
+- 4.7% → `0.047/0.10 = 0.47`.  
+- 20% → capped at **1.0** via `min(..., 1.0)` so one viral outlier doesn’t dominate forever.
+
+**3) Growth (weight 0.20)**
+```text
+min(max(growth_30d, 0.0) / 0.20, 1.0)
+```
+- `growth_30d = 0.08` means +8% followers in 30 days.  
+- **20% monthly growth = full marks**.  
+- `max(..., 0)` ignores negative growth for this simple ranker (or you’d add a penalty Strategy later).
+
+**4) Authenticity (weight 0.15)**
+- Already assumed 0..1 from an upstream authenticity pipeline.  
+- Lower weight so we prefer fit + engagement, but still demote fake-looking audiences.
+
+**Final score**
+```text
+score = 0.40*niche + 0.25*eng_norm + 0.20*growth_norm + 0.15*auth
+```
+
+**Worked example (Maya):** niches match 1.0, eng 0.47, growth 0.08/0.20=0.40, auth 0.91  
+→ `0.40*1 + 0.25*0.47 + 0.20*0.40 + 0.15*0.91 ≈ 0.40+0.12+0.08+0.14 = 0.74`
+
+**Joe** fails niche beauty → filtered out before scoring (or scores low if niches empty).
+
+### Why `min(x/cap, 1.0)`?
+
+> “It’s **normalization**. Different metrics have different units. Dividing by a ‘good enough’ cap maps them into 0..1 so weights are meaningful. Caps are tunable constants — I’d put them in config in production.”
+
+### `EngagementFirstRanker`
+
+> “Alternate Strategy: mostly engagement*100 + growth*50. No niche blend. Shows Strategy pattern — swap ranker without touching SearchService.”
+
+### What to say if interviewer challenges the magic numbers
+
+> “These weights and caps are **illustrative defaults** for the interview. In production we’d A/B tune them per customer vertical, or learn them. The important design is the Strategy interface and normalized features — not that 0.40 is sacred.”
+
+---
+
 ## PART 7 — Edge cases (say)
 
 > “Empty filters → still rank all (or require one filter).  

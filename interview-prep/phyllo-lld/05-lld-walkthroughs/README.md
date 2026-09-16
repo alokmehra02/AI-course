@@ -15,4 +15,7 @@ Each file is a **full 60-min speaking script**: what to say, clarifiers, pattern
 
 **Study order:** 01 → 02 → 03 → 04 → 05 (then 06 if time).
 
-**How to practice one file:** read SPEAK lines out loud → draw diagram from memory → hand-write the CODE section → answer follow-ups covered.
+**How to practice one file:** read SPEAK lines out loud → draw diagram from memory → hand-write the CODE section → read **Logic explained** and answer “how does this formula work?” → answer follow-ups.
+
+Each of 01–05 has a **Logic explained** section after the code (ranking weights, authenticity math, SoV, income summarize, KYC state decisions).
+
