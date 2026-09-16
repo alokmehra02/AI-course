@@ -1,13 +1,16 @@
 # Phyllo LLD Interview Prep
 
-**Primary file (use this):** [`PHYLLO_INTERVIEW_ONE_FILE.md`](PHYLLO_INTERVIEW_ONE_FILE.md)
+**Primary file:** [`PHYLLO_INTERVIEW_ONE_FILE.md`](PHYLLO_INTERVIEW_ONE_FILE.md)
 
-**Adapter → canonical speaking script (high chance):** [`ADAPTER_CANONICAL_INTERVIEW_SCRIPT.md`](ADAPTER_CANONICAL_INTERVIEW_SCRIPT.md)
+**Walkthroughs (speak + code scripts):** [`05-lld-walkthroughs/`](05-lld-walkthroughs/)
 
-1-hour round: website products + design patterns + Python code.
+| Priority | Doc |
+|----------|-----|
+| High | [`05-lld-walkthroughs/ADAPTER_CANONICAL_INTERVIEW_SCRIPT.md`](05-lld-walkthroughs/ADAPTER_CANONICAL_INTERVIEW_SCRIPT.md) — multi-platform → canonical |
+| High | [`05-lld-walkthroughs/01-CREATOR-SEARCH.md`](05-lld-walkthroughs/01-CREATOR-SEARCH.md) … `05-SOCIAL-KYC.md` — website products |
+| Medium | [`05-lld-walkthroughs/07-WEBHOOK-RELIABLE-DELIVERY.md`](05-lld-walkthroughs/07-WEBHOOK-RELIABLE-DELIVERY.md) — Phyllo webhook HLD |
 
-**Optional deep dives:** [`05-lld-walkthroughs/`](05-lld-walkthroughs/)  
-(Search, Vetting, Listening, Income, KYC, Campaign/Screening)
+See full index: [`05-lld-walkthroughs/README.md`](05-lld-walkthroughs/README.md)
 
 Other folders (`01-start-here` … `08-cheat-sheets`) are older extras — ignore unless you want more.
 
@@ -15,3 +18,4 @@ Other folders (`01-start-here` … `08-cheat-sheets`) are older extras — ignor
 
 - Product: https://www.getphyllo.com/
 - Docs: https://docs.getphyllo.com/
+- Webhook eng blog: https://www.getphyllo.com/post/building-a-distributed-webhook-system
